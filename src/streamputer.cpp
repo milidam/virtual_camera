@@ -22,15 +22,13 @@
 #include <fcntl.h>
 #include <assert.h>
 
-#include "ros/ros.h"
+#include "rclcpp/rclcpp.hpp"
 
-#include <image_transport/image_transport.h>
-#include <cv_bridge/cv_bridge.h>
-#include <sensor_msgs/image_encodings.h>
+#include <image_transport/image_transport.hpp>
+#include <cv_bridge/cv_bridge.hpp>
+#include <sensor_msgs/image_encodings.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/highgui/highgui.hpp>
-#include "cv.h"
-#include "cxcore.h"
 
 #define ROUND_UP_2(num)  (((num)+1)&~1)
 #define ROUND_UP_4(num)  (((num)+3)&~3)
@@ -47,6 +45,8 @@
 #define FRAME_HEIGHT 480
 
 #define FRAME_FORMAT V4L2_PIX_FMT_YUYV
+
+#define logger rclcpp::get_logger("virtual_camera")
 
 namespace enc = sensor_msgs::image_encodings;
 
@@ -92,23 +92,18 @@ int format_properties(const unsigned int format,
 
 void print_format(struct v4l2_format*vid_format)
 {
-  ROS_INFO("vid_format->type                =%d\n",	vid_format->type );
-  ROS_INFO("vid_format->fmt.pix.width       =%d\n",	vid_format->fmt.pix.width );
-  ROS_INFO("vid_format->fmt.pix.height      =%d\n",	vid_format->fmt.pix.height );
-  ROS_INFO("vid_format->fmt.pix.pixelformat =%d\n",	vid_format->fmt.pix.pixelformat);
-  ROS_INFO("vid_format->fmt.pix.sizeimage   =%d\n",	vid_format->fmt.pix.sizeimage );
-  ROS_INFO("vid_format->fmt.pix.field       =%d\n",	vid_format->fmt.pix.field );
-  ROS_INFO("vid_format->fmt.pix.bytesperline=%d\n",	vid_format->fmt.pix.bytesperline );
-  ROS_INFO("vid_format->fmt.pix.colorspace  =%d\n",	vid_format->fmt.pix.colorspace );
+  RCLCPP_INFO(logger, "vid_format->type                =%d\n",	vid_format->type );
+  RCLCPP_INFO(logger, "vid_format->fmt.pix.width       =%d\n",	vid_format->fmt.pix.width );
+  RCLCPP_INFO(logger, "vid_format->fmt.pix.height      =%d\n",	vid_format->fmt.pix.height );
+  RCLCPP_INFO(logger, "vid_format->fmt.pix.pixelformat =%d\n",	vid_format->fmt.pix.pixelformat);
+  RCLCPP_INFO(logger, "vid_format->fmt.pix.sizeimage   =%d\n",	vid_format->fmt.pix.sizeimage );
+  RCLCPP_INFO(logger, "vid_format->fmt.pix.field       =%d\n",	vid_format->fmt.pix.field );
+  RCLCPP_INFO(logger, "vid_format->fmt.pix.bytesperline=%d\n",	vid_format->fmt.pix.bytesperline );
+  RCLCPP_INFO(logger, "vid_format->fmt.pix.colorspace  =%d\n",	vid_format->fmt.pix.colorspace );
 }
 
-class ImageConverter
+class ImageConverter : public rclcpp::Node
 {
-    ros::NodeHandle nh_;
-    image_transport::ImageTransport it_;
-    image_transport::Subscriber image_sub_;
-    image_transport::Publisher image_pub_;
-
     int fdwr;
     size_t imageSize;
     size_t lineSize;
@@ -119,8 +114,7 @@ class ImageConverter
     cv::Size yuv_img_sz;
 
   public:
-    ImageConverter(int fd,  size_t imgsz, size_t linesz)
-    : it_(nh_)
+    ImageConverter(int fd,  size_t imgsz, size_t linesz) : Node("virtual_camera")
     {
       fdwr = fd;
       imageSize = imgsz;
@@ -132,8 +126,6 @@ class ImageConverter
       //YUV buffer
       buffer = (__u8*)malloc(sizeof(__u8)*imageSize);
       memset(buffer, 0, imageSize);
-
-      image_sub_=it_.subscribe("image", 1, &ImageConverter::imageCb, this);
     }
 
     ~ImageConverter()
@@ -141,15 +133,15 @@ class ImageConverter
       free(buffer);
     }
 
-    void imageCb(const sensor_msgs::ImageConstPtr& msg)
+    void imageCb(const sensor_msgs::msg::Image::ConstSharedPtr & msg)
     {
       size_t nx;
       size_t ny;
-      int i = 0;
+      unsigned int i = 0;
       __u8 r0,g0,b0,r1,g1,b1;
       __u8 y0,y1,u,v;
 
-      int ncol;
+      unsigned int ncol;
       uchar* pcol;
 
       cv_bridge::CvImagePtr cv_ptr;
@@ -160,7 +152,7 @@ class ImageConverter
       }
       catch (cv_bridge::Exception& e)
       {
-        ROS_ERROR("cv_bridge exception: %s", e.what());
+        RCLCPP_ERROR(get_logger(), "cv_bridge exception: %s", e.what());
         assert(0);
       }
 
@@ -170,7 +162,7 @@ class ImageConverter
       }
       catch (cv::Exception& e)
       {
-        ROS_ERROR("cvResize error");
+        RCLCPP_ERROR(get_logger(), "cvResize error");
         assert(0);
       }
 
@@ -200,7 +192,7 @@ class ImageConverter
         }
         if (i > imageSize)
         {
-          ROS_ERROR("The size of image exceed!");
+          RCLCPP_ERROR(get_logger(), "The size of image exceed!");
           return;
         }
       }
@@ -221,9 +213,7 @@ int main(int argc, char**argv)
   int fdwr = 0;
   int ret_code = 0;
 
-  ros::init(argc, argv, "streamputer", ros::init_options::AnonymousName);
-
-  ros::NodeHandle n;
+  rclcpp::init(argc, argv);
 
   if (argc > 1)
   {
@@ -237,11 +227,11 @@ int main(int argc, char**argv)
     strncpy(dir, argv[0], endch-stach+1);
     dir[endch-stach+1] = 0;
     strncat(dir, "../data/yuyv_camera.txt", 23);
-    ROS_INFO("DIR: %s\n", dir);
+    RCLCPP_INFO(logger, "DIR: %s\n", dir);
     FILE *fp = fopen(dir,"r");
     if (NULL == fp)
     {
-      ROS_ERROR("Open data/yuyv_camera.txt fialed!");
+      RCLCPP_ERROR(logger, "Open data/yuyv_camera.txt failed!");
       //return -1;
     }
     else
@@ -252,7 +242,7 @@ int main(int argc, char**argv)
 
   }
 
-  ROS_INFO("Using output device: %s\n", video_device);
+  RCLCPP_INFO(logger, "Using output device: %s\n", video_device);
 
   //Config camera
   fdwr = open(video_device, O_RDWR);
@@ -289,7 +279,7 @@ int main(int argc, char**argv)
 
   if (debug)
   {
-    ROS_INFO("frame: format=%d\tsize=%d\n", FRAME_FORMAT, framesize);
+    RCLCPP_INFO(logger, "frame: format=%d\tsize=%ld\n", FRAME_FORMAT, framesize);
   }
   print_format(&vid_format);
 
@@ -299,19 +289,26 @@ int main(int argc, char**argv)
                          &linewidth,
                          &framesize))
   {
-    ROS_ERROR("unable to guess correct settings for format '%d'\n", FRAME_FORMAT);
+    RCLCPP_ERROR(logger, "unable to guess correct settings for format '%d'\n", FRAME_FORMAT);
   }
 
-  if (ros::names::remap("image") == "image")
+  auto node = std::make_shared<ImageConverter>(fdwr, framesize, linewidth);
+
+  image_transport::ImageTransport it_(node);
+  image_transport::Subscriber image_sub_ = it_.subscribe(
+      "image",
+      1,
+      std::bind(&ImageConverter::imageCb, node, std::placeholders::_1)
+  );
+
+  if (image_sub_.getTopic() == "image")
   {
-    ROS_WARN("Topic 'image' has not been remapped! Typical command-line usage:\n"
-        "\t$ rosrun virtual_camera streamputer image:=<image topic> [\\dev\\video<id>]");
+    RCLCPP_WARN(logger, "Topic 'image' has not been remapped! Typical command-line usage:\n"
+        "\t$ ros2 run virtual_camera streamputer --ros-args -r image:=<image topic> [\\dev\\video<id>]");
   }
 
-  //Subscribe the img topic
-  ImageConverter ic(fdwr, framesize, linewidth);
-
-  ros::spin();
+  rclcpp::spin(node);
+  rclcpp::shutdown();
 
   close(fdwr);
 
